@@ -23,14 +23,19 @@
 package ipfix
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 
-	"log"
+	"os"
 
 	"github.com/antongulenko/vflow/reader"
 )
+
+var logger = log.New(os.Stderr, "[vflow/ipfix] ", log.Ldate|log.Ltime)
 
 // Decoder represents IPFIX payload and remote address
 type Decoder struct {
@@ -115,61 +120,125 @@ func (d *Decoder) Decode(mem MemCache) (*Message, error) {
 	// Add source IP address as Agent ID
 	msg.AgentID = d.raddr.String()
 
+	// In case there are multiple non-fatal errors, collect them and report all of them.
+	// The rest of the received sets will still be interpreted.
+	// A non-fatal error is for example an illegal data record or unknown template id.
+	var decodeErrors []error
 	for d.reader.Len() > 4 {
-
-		setHeader := new(SetHeader)
-		setHeader.unmarshal(d.reader)
-
-		if setHeader.Length < 4 {
-			return nil, io.ErrUnexpectedEOF
+		if err := d.decodeSet(mem, msg); err != nil {
+			switch err.(type) {
+			case nonfatalError:
+				decodeErrors = append(decodeErrors, err)
+			default:
+				return nil, err
+			}
 		}
+	}
 
+	switch len(decodeErrors) {
+	case 0:
+	case 1:
+		err = decodeErrors[0]
+	default:
+		var errMsg bytes.Buffer
+		errMsg.WriteString("Multiple errors:")
+		for _, subError := range decodeErrors {
+			errMsg.WriteString("\n- " + subError.Error())
+		}
+		err = errors.New(errMsg.String())
+	}
+	return msg, err
+}
+
+type nonfatalError error
+
+func (d *Decoder) decodeSet(mem MemCache, msg *Message) error {
+	startCount := d.reader.ReadCount()
+
+	setHeader := new(SetHeader)
+	if err := setHeader.unmarshal(d.reader); err != nil {
+		return err
+	}
+	if setHeader.Length < 4 {
+		return io.ErrUnexpectedEOF
+	}
+
+	var tr TemplateRecord
+	var err error
+	// This check is somewhat redundant with the switch-clause below, but the retrieve() operation should not be executed inside the loop.
+	if setHeader.SetID > 255 {
+		var ok bool
+		tr, ok = mem.retrieve(setHeader.SetID, d.raddr)
+		if !ok {
+			select {
+			case rpcChan <- RPCRequest{
+				ID: setHeader.SetID,
+				IP: d.raddr,
+			}:
+			default:
+			}
+			err = nonfatalError(fmt.Errorf("%s unknown ipfix template id# %d. Known ids: %v",
+				d.raddr.String(),
+				setHeader.SetID,
+				mem.allSetIds(),
+			))
+		}
+	}
+
+	for err == nil && setHeader.Length > uint16(d.reader.ReadCount()-startCount) {
 		switch {
 		case setHeader.SetID == 2:
 			// Template set
-			tr := TemplateRecord{}
-			tr.unmarshal(d.reader)
-			log.Printf("Received template set id %v for %v\n", tr.TemplateID, d.raddr)
-			mem.insert(tr.TemplateID, d.raddr, tr)
+			err = d.decodeTemplateRecord(mem)
 		case setHeader.SetID == 3:
-			// Option set
-			tr := TemplateRecord{}
-			tr.unmarshalOpts(d.reader)
-			log.Printf("Received option template set id %v for %v\n", tr.TemplateID, d.raddr)
-			mem.insert(tr.TemplateID, d.raddr, tr)
+			// Template option set
+			err = d.decodeTemplateOptionRecord(mem)
 		case setHeader.SetID >= 4 && setHeader.SetID <= 255:
-			// Reserved
+			// Reserved set
+			break
 		default:
-			// data
-			tr, ok := mem.retrieve(setHeader.SetID, d.raddr)
-			if !ok {
-				select {
-				case rpcChan <- RPCRequest{
-					ID: setHeader.SetID,
-					IP: d.raddr,
-				}:
-				default:
-				}
-				return msg, fmt.Errorf("%s unknown ipfix template id# %d. Known ids: %v",
-					d.raddr.String(),
-					setHeader.SetID,
-					mem.allSetIds(),
-				)
-			}
-
-			// data records
-			for d.reader.Len() > 2 {
-				data, err := decodeData(d.reader, tr)
-				if err != nil {
-					return msg, err
-				}
-
+			// Data set
+			var data []DecodedField
+			data, err = d.decodeData(tr)
+			if err == nil {
 				msg.DataSets = append(msg.DataSets, data)
 			}
 		}
 	}
 
-	return msg, nil
+	// In case of a nonfatal error, skip the rest of the set in order to continue with the next set
+	if _, isNonFatal := err.(nonfatalError); err == nil || isNonFatal {
+		leftoverBytes := setHeader.Length - uint16(d.reader.ReadCount()-startCount)
+		if leftoverBytes > 0 {
+			_, skipErr := d.reader.Read(int(leftoverBytes))
+			if skipErr != nil {
+				err = skipErr
+			}
+		}
+	}
+	return err
+}
+
+func (d *Decoder) decodeTemplateRecord(mem MemCache) error {
+	// Template set
+	tr := TemplateRecord{}
+	if err := tr.unmarshal(d.reader); err != nil {
+		return err
+	}
+	logger.Printf("Received template set id %v for %v\n", tr.TemplateID, d.raddr)
+	mem.insert(tr.TemplateID, d.raddr, tr)
+	return nil
+}
+
+func (d *Decoder) decodeTemplateOptionRecord(mem MemCache) error {
+	// Option set
+	tr := TemplateRecord{}
+	if err := tr.unmarshalOpts(d.reader); err != nil {
+		return err
+	}
+	logger.Printf("Received option template set id %v for %v\n", tr.TemplateID, d.raddr)
+	mem.insert(tr.TemplateID, d.raddr, tr)
+	return nil
 }
 
 // RFC 7011 - part 3.1. Message Header Format
@@ -341,20 +410,25 @@ func (f *TemplateFieldSpecifier) unmarshal(r *reader.Reader) error {
 // |             ...               |              ...              |
 // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 
-func (tr *TemplateRecord) unmarshal(r *reader.Reader) {
+func (tr *TemplateRecord) unmarshal(r *reader.Reader) error {
 	var (
 		th = TemplateHeader{}
 		tf = TemplateFieldSpecifier{}
 	)
 
-	th.unmarshal(r)
+	if err := th.unmarshal(r); err != nil {
+		return err
+	}
 	tr.TemplateID = th.TemplateID
 	tr.FieldCount = th.FieldCount
 
 	for i := th.FieldCount; i > 0; i-- {
-		tf.unmarshal(r)
+		if err := tf.unmarshal(r); err != nil {
+			return err
+		}
 		tr.FieldSpecifiers = append(tr.FieldSpecifiers, tf)
 	}
+	return nil
 }
 
 //  0                   1                   2                   3
@@ -385,34 +459,42 @@ func (tr *TemplateRecord) unmarshal(r *reader.Reader) {
 //  |     Option M Field Length     |      Padding (optional)       |
 //  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 
-func (tr *TemplateRecord) unmarshalOpts(r *reader.Reader) {
+func (tr *TemplateRecord) unmarshalOpts(r *reader.Reader) error {
 	var (
 		th = TemplateHeader{}
 		tf = TemplateFieldSpecifier{}
 	)
 
-	th.unmarshalOpts(r)
+	if err := th.unmarshalOpts(r); err != nil {
+		return err
+	}
 	tr.TemplateID = th.TemplateID
 	tr.FieldCount = th.FieldCount
 	tr.ScopeFieldCount = th.ScopeFieldCount
 
 	for i := th.ScopeFieldCount; i > 0; i-- {
-		tf.unmarshal(r)
+		if err := tf.unmarshal(r); err != nil {
+			return err
+		}
 		tr.ScopeFieldSpecifiers = append(tr.FieldSpecifiers, tf)
 	}
 
 	for i := th.FieldCount - th.ScopeFieldCount; i > 0; i-- {
-		tf.unmarshal(r)
+		if err := tf.unmarshal(r); err != nil {
+			return err
+		}
 		tr.FieldSpecifiers = append(tr.FieldSpecifiers, tf)
 	}
+	return nil
 }
 
-func decodeData(r *reader.Reader, tr TemplateRecord) ([]DecodedField, error) {
+func (d *Decoder) decodeData(tr TemplateRecord) ([]DecodedField, error) {
 	var (
 		fields []DecodedField
 		err    error
 		b      []byte
 	)
+	r := d.reader
 
 	for i := 0; i < len(tr.FieldSpecifiers); i++ {
 		b, err = r.Read(int(tr.FieldSpecifiers[i].Length))
@@ -426,8 +508,8 @@ func decodeData(r *reader.Reader, tr TemplateRecord) ([]DecodedField, error) {
 		}]
 
 		if !ok {
-			return nil, fmt.Errorf("IPFIX element key (%d) not exist",
-				tr.FieldSpecifiers[i].ElementID)
+			return nil, nonfatalError(fmt.Errorf("IPFIX element key (%d) not exist",
+				tr.FieldSpecifiers[i].ElementID))
 		}
 
 		fields = append(fields, DecodedField{
@@ -448,8 +530,8 @@ func decodeData(r *reader.Reader, tr TemplateRecord) ([]DecodedField, error) {
 		}]
 
 		if !ok {
-			return nil, fmt.Errorf("IPFIX element key (%d) not exist (scope)",
-				tr.ScopeFieldSpecifiers[i].ElementID)
+			return nil, nonfatalError(fmt.Errorf("IPFIX element key (%d) not exist (scope)",
+				tr.ScopeFieldSpecifiers[i].ElementID))
 		}
 
 		fields = append(fields, DecodedField{
