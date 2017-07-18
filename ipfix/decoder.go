@@ -27,6 +27,8 @@ import (
 	"io"
 	"net"
 
+	"log"
+
 	"github.com/antongulenko/vflow/reader"
 )
 
@@ -127,11 +129,13 @@ func (d *Decoder) Decode(mem MemCache) (*Message, error) {
 			// Template set
 			tr := TemplateRecord{}
 			tr.unmarshal(d.reader)
+			log.Printf("Received template set id %v for %v\n", tr.TemplateID, d.raddr)
 			mem.insert(tr.TemplateID, d.raddr, tr)
 		case setHeader.SetID == 3:
 			// Option set
 			tr := TemplateRecord{}
 			tr.unmarshalOpts(d.reader)
+			log.Printf("Received option template set id %v for %v\n", tr.TemplateID, d.raddr)
 			mem.insert(tr.TemplateID, d.raddr, tr)
 		case setHeader.SetID >= 4 && setHeader.SetID <= 255:
 			// Reserved
