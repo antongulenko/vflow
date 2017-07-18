@@ -28,6 +28,7 @@ import (
 	"hash/fnv"
 	"io/ioutil"
 	"net"
+	"sort"
 	"sync"
 	"time"
 )
@@ -90,20 +91,51 @@ func (m MemCache) getShard(id uint16, addr net.IP) (*TemplatesShard, uint32) {
 	return m[uint(hSum32)%uint(shardNo)], hSum32
 }
 
-func (m *MemCache) insert(id uint16, addr net.IP, tr TemplateRecord) {
+func (m MemCache) insert(id uint16, addr net.IP, tr TemplateRecord) {
 	shard, key := m.getShard(id, addr)
 	shard.Lock()
 	defer shard.Unlock()
 	shard.Templates[key] = Data{tr, time.Now().Unix()}
 }
 
-func (m *MemCache) retrieve(id uint16, addr net.IP) (TemplateRecord, bool) {
+func (m MemCache) retrieve(id uint16, addr net.IP) (TemplateRecord, bool) {
 	shard, key := m.getShard(id, addr)
 	shard.RLock()
 	defer shard.RUnlock()
 	v, ok := shard.Templates[key]
 
 	return v.Template, ok
+}
+
+func (m MemCache) allSetIds() []uint16 {
+	num := 0
+	for _, shard := range m {
+		num += len(shard.Templates)
+	}
+	result := make(sortedTemplateIDs, 0, num)
+	for _, shard := range m {
+		shard.RLock()
+		for _, set := range shard.Templates {
+			result = append(result, set.Template.TemplateID)
+		}
+		shard.RUnlock()
+	}
+	sort.Sort(result)
+	return []uint16(result)
+}
+
+type sortedTemplateIDs []uint16
+
+func (s sortedTemplateIDs) Len() int {
+	return len(s)
+}
+
+func (s sortedTemplateIDs) Less(i, j int) bool {
+	return s[i] < s[j]
+}
+
+func (s sortedTemplateIDs) Swap(i, j int) {
+	s[i], s[j] = s[j], s[i]
 }
 
 // Dump saves the current templates to hard disk
