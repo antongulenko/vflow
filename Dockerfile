@@ -19,9 +19,9 @@ RUN wget -q https://storage.googleapis.com/golang/go${GO_VERSION}.linux-${GO_ARC
 RUN mkdir -p ${GOPATH}/src ${GOPATH}/bin && chmod -R 777 ${GOPATH}
 
 # build vFlow
-RUN mkdir -p ${GOPATH}/src/github.com/VerizonDigital/vflow
-ADD . ${GOPATH}/src/github.com/VerizonDigital/vflow
-WORKDIR ${GOPATH}/src/github.com/VerizonDigital/vflow/vflow
+RUN mkdir -p ${GOPATH}/src/github.com/antongulenko/vflow
+ADD . ${GOPATH}/src/github.com/antongulenko/vflow
+WORKDIR ${GOPATH}/src/github.com/antongulenko/vflow/vflow
 RUN ["go", "get", "-d", "./..."]
 RUN ["go", "build", "-o", "/usr/local/bin/vflow"]
 

@@ -30,18 +30,18 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/VerizonDigital/vflow/netflow/v9"
-	"github.com/VerizonDigital/vflow/producer"
+	"github.com/antongulenko/vflow/netflow/v9"
 )
 
 // NetflowV9 represents netflow v9 collector
 type NetflowV9 struct {
-	port    int
-	addr    string
-	workers int
-	stop    bool
-	stats   NetflowV9Stats
-	pool    chan chan struct{}
+	consumer Consumer
+	port     int
+	addr     string
+	workers  int
+	stop     bool
+	stats    NetflowV9Stats
+	pool     chan chan struct{}
 }
 
 // NetflowV9UDPMsg represents netflow v9 UDP data
@@ -53,16 +53,13 @@ type NetflowV9UDPMsg struct {
 // NetflowV9Stats represents netflow v9 stats
 type NetflowV9Stats struct {
 	UDPQueue     int
-	MessageQueue int
 	UDPCount     uint64
 	DecodedCount uint64
-	MQErrorCount uint64
 	Workers      int32
 }
 
 var (
 	netflowV9UDPCh = make(chan NetflowV9UDPMsg, 1000)
-	netflowV9MQCh  = make(chan []byte, 1000)
 
 	mCacheNF9 netflow9.MemCache
 
@@ -75,11 +72,12 @@ var (
 )
 
 // NewNetflowV9 constructs NetflowV9
-func NewNetflowV9() *NetflowV9 {
+func NewNetflowV9(consumer Consumer) *NetflowV9 {
 	return &NetflowV9{
-		port:    opts.NetflowV9Port,
-		workers: opts.NetflowV9Workers,
-		pool:    make(chan chan struct{}, maxWorkers),
+		consumer: consumer,
+		port:     opts.NetflowV9Port,
+		workers:  opts.NetflowV9Workers,
+		pool:     make(chan chan struct{}, maxWorkers),
 	}
 }
 
@@ -111,20 +109,6 @@ func (i *NetflowV9) run() {
 	logger.Printf("netflow v9 is running (workers#: %d)", i.workers)
 
 	mCacheNF9 = netflow9.GetCache(opts.NetflowV9TplCacheFile)
-
-	go func() {
-		p := producer.NewProducer(opts.MQName)
-
-		p.MQConfigFile = opts.MQConfigFile
-		p.MQErrorCount = &i.stats.MQErrorCount
-		p.Logger = logger
-		p.Chan = netflowV9MQCh
-		p.Topic = opts.NetflowV9Topic
-
-		if err := p.Run(); err != nil {
-			logger.Fatal(err)
-		}
-	}()
 
 	go func() {
 		if !opts.DynWorkers {
@@ -177,7 +161,6 @@ func (i *NetflowV9) netflowV9Worker(wQuit chan struct{}) {
 		buf        = new(bytes.Buffer)
 		err        error
 		ok         bool
-		b          []byte
 	)
 
 LOOP:
@@ -209,22 +192,12 @@ LOOP:
 		atomic.AddUint64(&i.stats.DecodedCount, 1)
 
 		if decodedMsg.DataSets != nil {
-			b, err = decodedMsg.JSONMarshal(buf)
-			if err != nil {
-				logger.Println(err)
-				continue
-			}
-
-			select {
-			case netflowV9MQCh <- append([]byte{}, b...):
-			default:
-			}
+			i.consumer.NetFlow(decodedMsg)
 		}
 
 		if opts.Verbose {
-			logger.Println(string(b))
+			logger.Println(decodedMsg)
 		}
-
 	}
 
 }
@@ -232,10 +205,8 @@ LOOP:
 func (i *NetflowV9) status() *NetflowV9Stats {
 	return &NetflowV9Stats{
 		UDPQueue:     len(netflowV9UDPCh),
-		MessageQueue: len(netflowV9MQCh),
 		UDPCount:     atomic.LoadUint64(&i.stats.UDPCount),
 		DecodedCount: atomic.LoadUint64(&i.stats.DecodedCount),
-		MQErrorCount: atomic.LoadUint64(&i.stats.MQErrorCount),
 		Workers:      atomic.LoadInt32(&i.stats.Workers),
 	}
 

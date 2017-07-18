@@ -24,16 +24,14 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"net"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/VerizonDigital/vflow/packet"
-	"github.com/VerizonDigital/vflow/producer"
-	"github.com/VerizonDigital/vflow/sflow"
+	"github.com/antongulenko/vflow/packet"
+	"github.com/antongulenko/vflow/sflow"
 )
 
 // SFUDPMsg represents sFlow UDP message
@@ -44,27 +42,25 @@ type SFUDPMsg struct {
 
 // SFlow represents sFlow collector
 type SFlow struct {
-	port    int
-	addr    string
-	workers int
-	stop    bool
-	stats   SFlowStats
-	pool    chan chan struct{}
+	consumer Consumer
+	port     int
+	addr     string
+	workers  int
+	stop     bool
+	stats    SFlowStats
+	pool     chan chan struct{}
 }
 
 // SFlowStats represents sflow stats
 type SFlowStats struct {
 	UDPQueue     int
-	MessageQueue int
 	UDPCount     uint64
 	DecodedCount uint64
-	MQErrorCount uint64
 	Workers      int32
 }
 
 var (
 	sFlowUDPCh = make(chan SFUDPMsg, 1000)
-	sFlowMQCh  = make(chan []byte, 1000)
 
 	// sflow udp payload pool
 	sFlowBuffer = &sync.Pool{
@@ -75,13 +71,14 @@ var (
 )
 
 // NewSFlow constructs sFlow collector
-func NewSFlow() *SFlow {
+func NewSFlow(consumer Consumer) *SFlow {
 	logger = opts.Logger
 
 	return &SFlow{
-		port:    opts.SFlowPort,
-		workers: opts.SFlowWorkers,
-		pool:    make(chan chan struct{}, maxWorkers),
+		consumer: consumer,
+		port:     opts.SFlowPort,
+		workers:  opts.SFlowWorkers,
+		pool:     make(chan chan struct{}, maxWorkers),
 	}
 }
 
@@ -110,20 +107,6 @@ func (s *SFlow) run() {
 	}
 
 	logger.Printf("sFlow is running (workers#: %d)", s.workers)
-
-	go func() {
-		p := producer.NewProducer(opts.MQName)
-
-		p.MQConfigFile = opts.MQConfigFile
-		p.MQErrorCount = &s.stats.MQErrorCount
-		p.Logger = logger
-		p.Chan = sFlowMQCh
-		p.Topic = opts.SFlowTopic
-
-		if err := p.Run(); err != nil {
-			logger.Fatal(err)
-		}
-	}()
 
 	go func() {
 		if !opts.DynWorkers {
@@ -162,7 +145,6 @@ func (s *SFlow) sFlowWorker(wQuit chan struct{}) {
 		reader *bytes.Reader
 		msg    SFUDPMsg
 		ok     bool
-		b      []byte
 	)
 
 LOOP:
@@ -190,7 +172,7 @@ LOOP:
 			continue
 		}
 
-		decodedMsg := sflow.Message{}
+		decodedMsg := &sflow.Message{}
 
 		for _, data := range records {
 			switch data.(type) {
@@ -205,22 +187,11 @@ LOOP:
 			}
 		}
 
-		b, err = json.Marshal(decodedMsg)
-		if err != nil {
-			sFlowBuffer.Put(msg.body[:opts.SFlowUDPSize])
-			logger.Println(err)
-			continue
-		}
-
 		atomic.AddUint64(&s.stats.DecodedCount, 1)
+		s.consumer.SFlow(decodedMsg)
 
 		if opts.Verbose {
-			logger.Println(string(b))
-		}
-
-		select {
-		case sFlowMQCh <- append([]byte{}, b...):
-		default:
+			logger.Println(decodedMsg)
 		}
 
 		sFlowBuffer.Put(msg.body[:opts.SFlowUDPSize])
@@ -230,10 +201,8 @@ LOOP:
 func (s *SFlow) status() *SFlowStats {
 	return &SFlowStats{
 		UDPQueue:     len(sFlowUDPCh),
-		MessageQueue: len(sFlowMQCh),
 		UDPCount:     atomic.LoadUint64(&s.stats.UDPCount),
 		DecodedCount: atomic.LoadUint64(&s.stats.DecodedCount),
-		MQErrorCount: atomic.LoadUint64(&s.stats.MQErrorCount),
 		Workers:      atomic.LoadInt32(&s.stats.Workers),
 	}
 }

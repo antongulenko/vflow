@@ -29,6 +29,10 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+
+	"github.com/antongulenko/vflow/ipfix"
+	"github.com/antongulenko/vflow/netflow/v9"
+	"github.com/antongulenko/vflow/sflow"
 )
 
 var (
@@ -41,6 +45,12 @@ type proto interface {
 	shutdown()
 }
 
+type Consumer interface {
+	SFlow(msg *sflow.Message)
+	IPFIX(msg *ipfix.Message)
+	NetFlow(msg *netflow9.Message)
+}
+
 func main() {
 	var (
 		wg       sync.WaitGroup
@@ -51,9 +61,10 @@ func main() {
 
 	signal.Notify(signalCh, syscall.SIGINT, syscall.SIGTERM)
 
-	sFlow := NewSFlow()
-	ipfix := NewIPFIX()
-	netflow9 := NewNetflowV9()
+	consumer := &CliConsumer{}
+	sFlow := NewSFlow(consumer)
+	ipfix := NewIPFIX(consumer)
+	netflow9 := NewNetflowV9(consumer)
 
 	protos := []proto{sFlow, ipfix, netflow9}
 

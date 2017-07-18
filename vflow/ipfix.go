@@ -30,18 +30,18 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/VerizonDigital/vflow/ipfix"
-	"github.com/VerizonDigital/vflow/producer"
+	"github.com/antongulenko/vflow/ipfix"
 )
 
 // IPFIX represents IPFIX collector
 type IPFIX struct {
-	port    int
-	addr    string
-	workers int
-	stop    bool
-	stats   IPFIXStats
-	pool    chan chan struct{}
+	consumer Consumer
+	port     int
+	addr     string
+	workers  int
+	stop     bool
+	stats    IPFIXStats
+	pool     chan chan struct{}
 }
 
 // IPFIXUDPMsg represents IPFIX UDP data
@@ -54,17 +54,14 @@ type IPFIXUDPMsg struct {
 type IPFIXStats struct {
 	UDPQueue       int
 	UDPMirrorQueue int
-	MessageQueue   int
 	UDPCount       uint64
 	DecodedCount   uint64
-	MQErrorCount   uint64
 	Workers        int32
 }
 
 var (
 	ipfixUDPCh         = make(chan IPFIXUDPMsg, 1000)
 	ipfixMCh           = make(chan IPFIXUDPMsg, 1000)
-	ipfixMQCh          = make(chan []byte, 1000)
 	ipfixMirrorEnabled bool
 
 	// templates memory cache
@@ -79,11 +76,12 @@ var (
 )
 
 // NewIPFIX constructs IPFIX
-func NewIPFIX() *IPFIX {
+func NewIPFIX(consumer Consumer) *IPFIX {
 	return &IPFIX{
-		port:    opts.IPFIXPort,
-		workers: opts.IPFIXWorkers,
-		pool:    make(chan chan struct{}, maxWorkers),
+		consumer: consumer,
+		port:     opts.IPFIXPort,
+		workers:  opts.IPFIXWorkers,
+		pool:     make(chan chan struct{}, maxWorkers),
 	}
 }
 
@@ -120,20 +118,6 @@ func (i *IPFIX) run() {
 	})
 
 	go mirrorIPFIXDispatcher(ipfixMCh)
-
-	go func() {
-		p := producer.NewProducer(opts.MQName)
-
-		p.MQConfigFile = opts.MQConfigFile
-		p.MQErrorCount = &i.stats.MQErrorCount
-		p.Logger = logger
-		p.Chan = ipfixMQCh
-		p.Topic = opts.IPFIXTopic
-
-		if err := p.Run(); err != nil {
-			logger.Fatal(err)
-		}
-	}()
 
 	go func() {
 		if !opts.DynWorkers {
@@ -187,7 +171,6 @@ func (i *IPFIX) ipfixWorker(wQuit chan struct{}) {
 		buf        = new(bytes.Buffer)
 		err        error
 		ok         bool
-		b          []byte
 	)
 
 LOOP:
@@ -230,22 +213,12 @@ LOOP:
 		atomic.AddUint64(&i.stats.DecodedCount, 1)
 
 		if decodedMsg.DataSets != nil {
-			b, err = decodedMsg.JSONMarshal(buf)
-			if err != nil {
-				logger.Println(err)
-				continue
-			}
-
-			select {
-			case ipfixMQCh <- append([]byte{}, b...):
-			default:
-			}
+			i.consumer.IPFIX(decodedMsg)
 		}
 
 		if opts.Verbose {
-			logger.Println(string(b))
+			logger.Println(decodedMsg)
 		}
-
 	}
 }
 
@@ -253,10 +226,8 @@ func (i *IPFIX) status() *IPFIXStats {
 	return &IPFIXStats{
 		UDPQueue:       len(ipfixUDPCh),
 		UDPMirrorQueue: len(ipfixMCh),
-		MessageQueue:   len(ipfixMQCh),
 		UDPCount:       atomic.LoadUint64(&i.stats.UDPCount),
 		DecodedCount:   atomic.LoadUint64(&i.stats.DecodedCount),
-		MQErrorCount:   atomic.LoadUint64(&i.stats.MQErrorCount),
 		Workers:        atomic.LoadInt32(&i.stats.Workers),
 	}
 }
