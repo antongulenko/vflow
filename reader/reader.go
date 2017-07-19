@@ -36,6 +36,10 @@ type Reader struct {
 
 var errReader = errors.New("can not read the data")
 
+func (r *Reader) Data() []byte {
+	return r.data
+}
+
 // NewReader constructs a reader
 func NewReader(b []byte) *Reader {
 	return &Reader{

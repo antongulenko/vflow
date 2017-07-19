@@ -108,6 +108,8 @@ func (d *Decoder) Decode(mem MemCache) (*Message, error) {
 		err error
 	)
 
+	log.Printf("\n\n===== DECODING MESSAGE ====\n%#v\n\n", d.reader.Data())
+
 	// IPFIX Message Header decoding
 	if err = msg.Header.unmarshal(d.reader); err != nil {
 		return nil, err
