@@ -6,9 +6,9 @@ import (
 	"bytes"
 	"encoding/json"
 
-	"github.com/antongulenko/vflow/ipfix"
-	"github.com/antongulenko/vflow/netflow/v9"
-	"github.com/antongulenko/vflow/sflow"
+	"github.com/VerizonDigital/vflow/ipfix"
+	"github.com/VerizonDigital/vflow/netflow/v9"
+	"github.com/VerizonDigital/vflow/sflow"
 )
 
 type CliConsumer struct {

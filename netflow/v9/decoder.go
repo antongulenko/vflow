@@ -27,8 +27,8 @@ import (
 	"io"
 	"net"
 
-	"github.com/antongulenko/vflow/ipfix"
-	"github.com/antongulenko/vflow/reader"
+	"github.com/VerizonDigital/vflow/ipfix"
+	"github.com/VerizonDigital/vflow/reader"
 )
 
 // PacketHeader represents Netflow v9  packet header

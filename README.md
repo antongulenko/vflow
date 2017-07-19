@@ -1,8 +1,8 @@
 ![vFlow](docs/imgs/vflow_logo.png?raw=true "vFlow logo")
 ##
 [![Build Status](https://travis-ci.org/VerizonDigital/vflow.svg?branch=master)](https://travis-ci.org/VerizonDigital/vflow) 
-[![Go Report Card](https://goreportcard.com/badge/github.com/antongulenko/vflow)](https://goreportcard.com/report/github.com/antongulenko/vflow)
-[![GoDoc](https://godoc.org/github.com/antongulenko/vflow?status.svg)](https://godoc.org/github.com/antongulenko/vflow)
+[![Go Report Card](https://goreportcard.com/badge/github.com/VerizonDigital/vflow)](https://goreportcard.com/report/github.com/VerizonDigital/vflow)
+[![GoDoc](https://godoc.org/github.com/VerizonDigital/vflow?status.svg)](https://godoc.org/github.com/VerizonDigital/vflow)
 
 High-performance, scalable and reliable IPFIX, sFlow and Netflow collector. 
 
@@ -24,7 +24,7 @@ High-performance, scalable and reliable IPFIX, sFlow and Netflow collector.
 - [JUNOS Integration](/docs/junos_integration.md).
 - [Monitoring](/monitor/README.md).
 - [Stress / Load Generator](/stress/README.md).
-- [Kafka consumer examples](https://github.com/antongulenko/vflow/tree/master/consumers).
+- [Kafka consumer examples](https://github.com/VerizonDigital/vflow/tree/master/consumers).
 
 ## Decoded IPFIX data
 The IPFIX data decodes to JSON format and IDs are [IANA IPFIX element ID](http://www.iana.org/assignments/ipfix/ipfix.xhtml)
@@ -47,8 +47,8 @@ The IPFIX data decodes to JSON format and IDs are [IANA IPFIX element ID](http:/
 ## Build
 Given that the Go Language compiler (version 1.8 preferred) is installed, you can build it with:
 ```
-go get github.com/antongulenko/vflow/vflow
-cd $GOPATH/src/github.com/antongulenko/vflow
+go get github.com/VerizonDigital/vflow/vflow
+cd $GOPATH/src/github.com/VerizonDigital/vflow
 
 make build
 or

@@ -32,7 +32,7 @@ import (
 
 	"os"
 
-	"github.com/antongulenko/vflow/reader"
+	"github.com/VerizonDigital/vflow/reader"
 )
 
 var logger = log.New(os.Stderr, "[vflow/ipfix] ", log.Ldate|log.Ltime)

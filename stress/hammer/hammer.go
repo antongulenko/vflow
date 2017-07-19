@@ -28,7 +28,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/antongulenko/vflow/mirror"
+	"github.com/VerizonDigital/vflow/mirror"
 )
 
 const (
